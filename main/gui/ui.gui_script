@@ -1,0 +1,200 @@
+local rnodes = require "main.m.rnodes"
+local si = require "main.m.si"
+
+--- Check node position for remove it from the table.
+-- use dissolve fx for the node and total remove it from the scene after animation is finished.
+local function check_discard(self, node, instance, x, y)
+	if gui.pick_node(gui.get_node("discard"), x, y) then
+		rnodes.delete_node(self, node, "dissolve")
+		rnodes.unregister(self, node)
+		if instance.shadow then
+			gui.set_enabled(instance.shadow, false)
+		end
+		return true
+	end
+	return false
+end
+
+--- Press (initial moment of click or tap on the node) callback. 
+-- Called once per corresponding event.
+-- @param self script context.
+-- @param instance table of registered node, contains value, node, etc.
+-- @param action table is received from the on_input event.
+-- @return boolean
+local function press_cb(self, instance, action)
+	local node = instance.node
+	gui.animate(node, "scale", instance.scale * 1.1, gui.EASING_OUTBACK, 0.1)
+	-- Move a card position to the top of all cards.
+	gui.move_below(node, self.top) -- visual 
+	rnodes.move_to_top(self, node) -- in table order
+	return true -- return 'true' to accept the following steps (drag and release) or 'false' to prevent it.
+end
+
+--- Release (click or tap the node) callback. 
+-- Called once per corresponding event.
+-- @param self script context
+-- @param instance table of registered node, contains value, the node, initial position and scale of node, etc.
+-- @param action
+local function release_cb(self, instance, action)
+	local node = instance.node
+	gui.cancel_animation(node, "euler.y")
+	gui.set(node, "euler.y", 0)
+	gui.animate(node, "scale", instance.scale, gui.EASING_OUTBOUNCE, 0.15)
+
+	local is_discarded = check_discard(self, node, instance, action.x, action.y)
+	-- if not is_discarded then 
+	-- 	gui.animate(node, "position", instance.position, gui.EASING_OUTBACK, 0.25)
+	-- end
+	
+	-- Reset variable, that used in drag_cb.
+	self.old_pos = nil
+
+	-- Check a card below this card example.
+	-- local n, rn = rnodes.aabb(self, position.x, position.y, instance)
+	-- pprint(rn)
+end
+
+
+--- Drag callback. 
+-- Invoked every time a node changes its position and is in a dragged state.
+-- @param self script context.
+-- @param instance table of registered node, contains value, node, etc.
+-- @param action table is received from the on_input event.
+-- @param action_pos vector3 modified position of the node considering the screen aspect ratio.
+local function drag_cb(self, instance, action, action_pos)
+	-- Calculate a new position of node.
+	local position = action_pos - instance.offset
+	local node = instance.node
+	gui.set_position(node, position)
+
+	-- 3D shift effect
+	if self.old_pos then
+		local v = position - self.old_pos
+		local l = math.min(vmath.length(v) / 2, 20)
+		local sign = v.x > 0 and -1 or 1
+		gui.animate(node, "euler.y",  l *2 * sign, gui.EASING_OUTELASTIC, .7)
+		gui.animate(node, "euler.z",  l * sign, gui.EASING_OUTELASTIC, .5)
+	end
+	self.old_pos = position
+	-- 3D effect end
+
+end
+
+-- Over callback. 
+-- Invoked every time the cursor hovers over a node.
+-- @param self script context.
+-- @param instance table of registered node, contains value, node, etc.
+-- @param action table is received from the on_input event.
+-- @param enter constant state of cursor. Enter, Out or moving over a node. 
+local function over_cb(self, instance, action, enter)
+	local node = instance.node
+	if enter == rnodes.ENTER then
+		gui.animate(node, "scale",  instance.scale * 1.05, gui.EASING_OUTELASTIC, .25)
+		-- rnodes.move_to_top(self, node)
+		-- gui.move_below(node, self.top)
+	elseif enter == rnodes.OUT then
+		gui.animate(node, "scale",  instance.scale, gui.EASING_OUTELASTIC, .1)
+		gui.animate(node, "euler.y",  0, gui.EASING_OUTELASTIC, .2)
+		gui.animate(node, "euler.x",  0, gui.EASING_OUTELASTIC, .2)
+	elseif enter == rnodes.REPEAT then
+		-- Do shift effect when a cursor moves over the our node.
+		local action_pos = vmath.vector3(action.x, action.y, 0)
+		local node_pos = rnodes.get_position(node)
+		local offset = action_pos - node_pos
+		gui.animate(node, "euler.y",  rnodes.clamp(offset.x/10, -5, 5), gui.EASING_OUTELASTIC, .5)
+		gui.animate(node, "euler.x",  rnodes.clamp(-offset.y/10, -5, 5), gui.EASING_OUTELASTIC, .5)
+	end
+end
+
+--- Create a card from the dummy template.
+-- @param self script context.
+-- @param position vector3
+local function draw_card(self, position)
+	local clone = gui.clone_tree(gui.get_node("dummy"))
+	local node = clone[hash("dummy")]
+	gui.set_position(node, position)
+	gui.set_enabled(node, true)
+	-- gui.set_visible(node, true)
+	local uid = math.random(1, 3)
+	gui.play_flipbook(clone[hash("image")], "card"..uid)
+	-- Register cloned card in rnodes module and setup callbacks for it
+	local obj = rnodes.register(self, {
+		node = node,
+		value = uid,
+		position = position,
+		shadow = clone[hash("shadow")],
+		release_cb = release_cb,
+		press_cb = press_cb,
+		drag_cb = drag_cb,
+		over_cb = over_cb
+	})
+	return node, obj
+end
+
+function init(self)
+
+	-- The top node in the container, we need it to order the others below it.
+	self.top = gui.get_node("_top")
+	self.registered_nodes = {}
+
+	rnodes.get_screen_aspect_ratio()
+
+	msg.post(".", "acquire_input_focus")
+
+	-- Register a button node 'deck' and its callbacks.
+	si.register(self, {
+		node = "deck",
+		-- Click or tap release callback. Called with self context and the instance (this) table.
+		callback = function(self, instance)
+			local position = vmath.vector3(math.random(-200, 200), math.random(-200, 200), 200)
+			local node = draw_card(self, position)
+			gui.move_below(node, self.top)
+			gui.animate(node, "position.z", 0, gui.EASING_OUTBACK, .4, 0)
+		end,
+		-- Press event callback. Do shake effect.
+		press_cb = function(self, instance)
+			si.shake(self, instance.node, instance.scale)
+		end,
+		-- Cursor over callback. Invoked once when a cursor enter the node and once when get out the node. 
+		over_cb = function(self, instance, enter)
+			if enter then
+				gui.animate(instance.node, "scale",  instance.scale * 1.05, gui.EASING_OUTELASTIC, .25)
+			else
+				gui.animate(instance.node, "scale",  instance.scale, gui.EASING_OUTELASTIC, .25)
+			end
+		end,
+	})
+	-- Drag node callback example:
+	-- si.register(self, {
+	-- 	node = "container",
+	-- 	drag_cb = function(self, instance, action, position)
+	-- 		local node = instance.node
+	-- 		gui.set_position(node, position)
+	-- 	end
+	-- })
+
+	gui.set_render_order(10)
+end
+
+function final(self)
+	msg.post(".", "release_input_focus")
+end
+
+function update(self, dt)
+end
+
+function on_message(self, message_id, message, sender)
+end
+
+
+function on_input(self, action_id, action)
+	if rnodes.on_input(self, action_id, action) then
+		return true
+	end
+	if si.on_input(self, action_id, action) then
+		return true
+	end
+
+end
+
+

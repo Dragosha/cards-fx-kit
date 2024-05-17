@@ -1,0 +1,12 @@
+go.property("dissolve", resource.texture("/assets/rgba/noise.png"))
+
+function init(self)
+	-- All of we need there is throw a noise texture to the render script.
+	local my_texture_info = resource.get_texture_info(self.dissolve)
+	-- pprint(my_texture_info)
+	msg.post("@render:", "set_my_texture", { handle = my_texture_info.handle })
+
+	
+	msg.post(".", "acquire_input_focus")
+	msg.post("@render:", "use_fixed_fit_projection", { near = -300, far = 300 })
+end
